@@ -1,0 +1,20 @@
+# Local reference documents
+*.pdf
+*.PDF
+
+# Generated document extracts/previews
+pdf-extracts/
+pdf-previews/
+tmp-pdf/
+
+# Local database imports
+*.sql
+*.dump
+
+# Environment and dependencies
+.env
+node_modules/
+
+# OS/editor files
+.DS_Store
+Thumbs.db

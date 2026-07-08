@@ -6,6 +6,7 @@
 pdf-extracts/
 pdf-previews/
 tmp-pdf/
+docs/
 
 # Local database imports
 *.sql

@@ -11,6 +11,7 @@ const {
 } = require("../utils/http");
 
 const router = express.Router();
+const listingIdPattern = /^[A-Za-z0-9-]+$/;
 
 const listColumns = `
   id,
@@ -83,6 +84,82 @@ function normalizeProperty(row) {
     photoCount: row.photoCount === null ? null : Number(row.photoCount),
     photos: parsePhotos(row.photos),
   };
+}
+
+function normalizeOpenHouse(row) {
+  return {
+    ...row,
+    allData: row.allData || null,
+  };
+}
+
+function validateListingId(id) {
+  const normalizedId = String(id || "").trim();
+
+  if (!normalizedId) {
+    return {
+      value: null,
+      errors: ["listing ID is required"],
+    };
+  }
+
+  if (normalizedId.length > 64) {
+    return {
+      value: null,
+      errors: ["listing ID must be 64 characters or fewer"],
+    };
+  }
+
+  if (!listingIdPattern.test(normalizedId)) {
+    return {
+      value: null,
+      errors: ["listing ID may only contain letters, numbers, and hyphens"],
+    };
+  }
+
+  return {
+    value: normalizedId,
+    errors: [],
+  };
+}
+
+async function findPropertyByListingId(listingId) {
+  const [rows] = await pool.query(
+    `
+      SELECT ${detailColumns}
+      FROM rets_property
+      WHERE L_ListingID = ? OR L_DisplayId = ?
+      LIMIT 1
+    `,
+    [listingId, listingId]
+  );
+
+  return rows[0] || null;
+}
+
+async function findOpenHousesByListingId(listingId) {
+  const [rows] = await pool.query(
+    `
+      SELECT
+        id,
+        L_ListingID AS listingId,
+        L_DisplayId AS displayId,
+        OpenHouseDate AS date,
+        OH_StartTime AS startTime,
+        OH_EndTime AS endTime,
+        OH_StartDate AS startDate,
+        OH_EndDate AS endDate,
+        API_OH_StartDate AS startsAt,
+        API_OH_EndDate AS endsAt,
+        all_data AS allData
+      FROM rets_openhouse
+      WHERE L_ListingID = ? OR L_DisplayId = ?
+      ORDER BY OpenHouseDate ASC, OH_StartTime ASC, id ASC
+    `,
+    [listingId, listingId]
+  );
+
+  return rows.map(normalizeOpenHouse);
 }
 
 function buildPropertyFilters(query) {
@@ -217,44 +294,48 @@ router.get("/", async (req, res) => {
   }
 });
 
-// GET /api/properties/:listingId
-router.get("/:listingId", async (req, res) => {
-  try {
-    const [rows] = await pool.query(
-      `
-        SELECT ${detailColumns}
-        FROM rets_property
-        WHERE L_ListingID = ? OR L_DisplayId = ?
-        LIMIT 1
-      `,
-      [req.params.listingId, req.params.listingId]
-    );
+// GET /api/properties/:id/openhouses
+// This specific route must be registered before /:id so Express does not treat
+// "openhouses" as part of the ID route.
+router.get("/:id/openhouses", async (req, res) => {
+  const { value: listingId, errors } = validateListingId(req.params.id);
+  if (errors.length > 0) {
+    return rejectBadRequest(res, errors);
+  }
 
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Property not found" });
+  try {
+    const property = await findPropertyByListingId(listingId);
+    if (!property) {
+      return res.status(404).json({
+        error: "Property not found",
+        message: `No property found for listing ID ${listingId}`,
+      });
     }
 
-    const property = normalizeProperty(rows[0]);
+    const openHouses = await findOpenHousesByListingId(listingId);
+    res.json({ data: openHouses });
+  } catch (err) {
+    sendServerError(res, err);
+  }
+});
 
-    const [openHouses] = await pool.query(
-      `
-        SELECT
-          id,
-          L_ListingID AS listingId,
-          L_DisplayId AS displayId,
-          OpenHouseDate AS date,
-          OH_StartTime AS startTime,
-          OH_EndTime AS endTime,
-          API_OH_StartDate AS startsAt,
-          API_OH_EndDate AS endsAt
-        FROM rets_openhouse
-        WHERE L_ListingID = ? OR L_DisplayId = ?
-        ORDER BY OpenHouseDate ASC, OH_StartTime ASC
-      `,
-      [req.params.listingId, req.params.listingId]
-    );
+// GET /api/properties/:id
+router.get("/:id", async (req, res) => {
+  const { value: listingId, errors } = validateListingId(req.params.id);
+  if (errors.length > 0) {
+    return rejectBadRequest(res, errors);
+  }
 
-    res.json({ data: { ...property, openHouses } });
+  try {
+    const property = await findPropertyByListingId(listingId);
+    if (!property) {
+      return res.status(404).json({
+        error: "Property not found",
+        message: `No property found for listing ID ${listingId}`,
+      });
+    }
+
+    res.json({ data: normalizeProperty(property) });
   } catch (err) {
     sendServerError(res, err);
   }
